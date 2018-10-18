@@ -13,6 +13,10 @@ Features:
 - arithmetic and concatenation operations work with assignment
 - select('#', ...) and select(n, ...) works when used for command-line arguments
 
+depends upon:
+- https://github.com/thenumbernine/lua-parser
+- https://github.com/thenumbernine/lua-ext
+
 Still TODO:
 - support for inline and lambda functions 
 -  keep track of what vars are in scope when a function is moved 
