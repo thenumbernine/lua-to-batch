@@ -4,7 +4,6 @@ local parser = require 'parser'
 local ast = require 'parser.ast'
 local table = require 'ext.table'
 local file = require 'ext.file'
-local io = require 'ext.io'
 local range = require 'ext.range'
 
 local infile = ...
@@ -291,10 +290,10 @@ function ast._endlocal.tostringmethods:batch()
 end
 
 infile = infile or 'test1.lua'
-local inbase, ext = io.getfileext(infile)
+local inbase, ext = file(infile):getext()
 local outfile = inbase..'.bat'
 print('reading '..infile)
-local code = file[infile]
+local code = file(infile):read()
 local tree = parser.parse(code)
 
 -- if there is a _call to "select('#', ...)" then find the parent block and put some argcount code at the beginning
@@ -580,11 +579,13 @@ end
 table.insert(tree, ast._endlocal(table.keys(globals)))
 
 ast.tostringmethod = 'batch'
-file[outfile] = table{
-	'@echo off',
-	'setlocal enabledelayedexpansion',
-	tostring(tree)
-}:concat'\n'
-	-- until I can solve my tab problems:
-	:gsub('\t+', '\t')
+file(outfile):write(
+	table{
+		'@echo off',
+		'setlocal enabledelayedexpansion',
+		tostring(tree)
+	}:concat'\n'
+		-- until I can solve my tab problems:
+		:gsub('\t+', '\t')
+)
 print('writing '..outfile)
