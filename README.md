@@ -32,4 +32,3 @@ Still TODO:
 -  in fact, merging the assignment and if-conditions, it might be best to use temp registers for bool expressions (and all expressions, for that matter)
 - heterogeneous tables -- non-numbers as keys
 - assigning functions to variables
-

@@ -47,7 +47,7 @@ end
 -- make lua output the default for nodes' output
 local names = table()
 for name,nc in pairs(ast) do
-	if ast.node.is(nc) then
+	if ast.node:isa(nc) then
 		names:insert(name)
 		nc.tostringmethods.batch = nc.tostringmethods.lua
 	end
@@ -60,7 +60,7 @@ end
 
 function ast._call.tostringmethods:batch()
 	local funcname
-	if ast._var.is(self.func) then
+	if ast._var:isa(self.func) then
 		funcname = self.func.name
 		if funcname == 'select' then
 			error("select() should have be replaced already")
@@ -68,10 +68,10 @@ function ast._call.tostringmethods:batch()
 		if funcname == 'print' then
 			return 'echo '..table.mapi(self.args, tostring):concat'\t'
 		end
-	elseif ast._index.is(self.func) then
-		if ast._var.is(self.func.expr)
+	elseif ast._index:isa(self.func) then
+		if ast._var:isa(self.func.expr)
 		and self.func.expr.name == 'os'
-		and ast._string.is(self.func.key)
+		and ast._string:isa(self.func.key)
 		and self.func.key.value == 'exit'
 		then
 			-- os.exit(1) ... returns an error ... but shouldn't kill calling batch files, right?
@@ -179,7 +179,7 @@ end
 local function findsource(src)
 	local node = src
 	while node do
-		if ast._foreq.is(node) and node.var.name == src.name then return node end
+		if ast._foreq:isa(node) and node.var.name == src.name then return node end
 		node = node.parent
 	end
 end
@@ -187,13 +187,13 @@ end
 function ast._var.tostringmethods:batch()
 	local name = self.name
 	local varsource = findsource(self)
-	if varsource and ast._foreq.is(varsource) then
+	if varsource and ast._foreq:isa(varsource) then
 		name = '%%' .. name
 	else
 		if type(name) == 'number' then
 			name = '%' .. name
 		else
-			if not ast._index.is(self.parent) then
+			if not ast._index:isa(self.parent) then
 				name = '!'..name..'!'
 			end
 		end
@@ -228,7 +228,7 @@ function ast._function.tostringmethods:batch()
 	-- if it is a local function then move it to global scope ... this means closures are in danger of being invalid
 	-- args will have to be remapped beforehand as well...
 	local name = assert(self.name)	-- if it's a lambda then generate it a name
-	assert(ast._var.is(name))
+	assert(ast._var:isa(name))
 	name = name.name	-- TODO function .name is a var, with .name a string (should it be a _string ?)
 	local l = nextgoto()
 	-- for safety's sake I'll add gotos around the function 
@@ -299,14 +299,14 @@ local tree = parser.parse(code)
 -- if there is a _call to "select('#', ...)" then find the parent block and put some argcount code at the beginning
 local found
 tree:traverse(function(node)
-	if ast._call.is(node)
+	if ast._call:isa(node)
 	and node.func.name == 'select'
-	and ast._vararg.is(node.args[2])
+	and ast._vararg:isa(node.args[2])
 	then
-		if ast._string.is(node.args[1])
+		if ast._string:isa(node.args[1])
 		and node.args[1].value == '#'
 		then
-			local _, p = node:ancestors():find(nil, ast._block.is)
+			local _, p = node:ancestors():find(nil, function(x) return ast._block:isa(x) end)
 			assert(p, "expected a parent to be a block")
 			found = p
 			return ast._var'__tmp__argcount'
@@ -328,25 +328,25 @@ ast.refreshparents(tree)
 -- break down all composite expressions into temp stmts
 local assignsForStmts = {}
 local function opis(node)
-	return (ast._op.is(node) or ast._par.is(node))
+	return (ast._op:isa(node) or ast._par:isa(node))
 	and not (
 	-- not handling boolean right now
-		ast._eq.is(node)
-		or ast._ne.is(node)
-		or ast._ge.is(node)
-		or ast._gt.is(node)
-		or ast._le.is(node)
-		or ast._lt.is(node)
-		or ast._and.is(node)
-		or ast._or.is(node)
-		or ast._not.is(node)
+		ast._eq:isa(node)
+		or ast._ne:isa(node)
+		or ast._ge:isa(node)
+		or ast._gt:isa(node)
+		or ast._le:isa(node)
+		or ast._lt:isa(node)
+		or ast._and:isa(node)
+		or ast._or:isa(node)
+		or ast._not:isa(node)
 	)
 end
 tree:traverse(nil, function(node)
 	if opis(node) then
 		--  then move node to before the containing statement 
-		local _, p = node:ancestors():find(nil, ast._stmt.is)
-		if ast._local.is(p.parent) then p = p.parent end
+		local _, p = node:ancestors():find(nil, function(x) return ast._stmt:isa(x) end)
+		if ast._local:isa(p.parent) then p = p.parent end
 
 		local function replace(arg)
 			local varname = nextvar()
@@ -357,13 +357,13 @@ tree:traverse(nil, function(node)
 			return var
 		end
 
-		if ast._op.is(node) then
+		if ast._op:isa(node) then
 			for i=1,#node.args do
 				if opis(node.args[i]) then
 					node.args[i] = replace(node.args[i])
 				end
 			end
-		elseif ast._par.is(node) then
+		elseif ast._par:isa(node) then
 			--node.expr = replace(node.expr)
 			node = node.expr
 		end
@@ -387,13 +387,13 @@ end)
 -- if it has arithmetic of any sort then use /a on the assignment's "set"
 -- TODO in fact, we might have to break down all expressions into their own statements
 tree:traverse(function(node)
-	if ast._add.is(node)
-	or ast._sub.is(node)
-	or ast._mul.is(node)
-	or ast._div.is(node)
-	or ast._mod.is(node)
+	if ast._add:isa(node)
+	or ast._sub:isa(node)
+	or ast._mul:isa(node)
+	or ast._div:isa(node)
+	or ast._mod:isa(node)
 	then
-		local _, p = node:ancestors():find(nil, ast._stmt.is)
+		local _, p = node:ancestors():find(nil, function(x) return ast._stmt:isa(x) end)
 		assert(p, "expected a parent to be a stmt")
 		p.arith = true
 	end
@@ -407,14 +407,14 @@ end)
 
 -- rename all function arguments to %'s
 tree:traverse(function(node)
-	if ast._function.is(node) then
+	if ast._function:isa(node) then
 		-- TODO make sure the function is global scope
 		local args = table.mapi(node.args, function(arg) 
 			assert(type(arg.name) == 'string')
 			return arg.name 
 		end)
 		return node:traverse(function(node2)
-			if ast._var.is(node2) then
+			if ast._var:isa(node2) then
 				assert(type(node2.name) == 'string')
 				local i = table.find(args, node2.name)
 				if i then
@@ -436,13 +436,13 @@ end)
 --  and goto inside of for-loops fail (unless they are calls)
 local newfuncs = table()
 tree:traverse(function(node)
-	if ast._foreq.is(node) then
+	if ast._foreq:isa(node) then
 		local newfuncname = nextfunc()
 		local stmts = {table.unpack(node)}
 		-- replace all instances of the for-loop variable with the function arg %1
 		for _,stmt in ipairs(stmts) do
 			stmt:traverse(function(node2)
-				if ast._var.is(node2) then
+				if ast._var:isa(node2) then
 					if node2.name == node.var.name then
 						return ast._var(1)
 					end
@@ -492,13 +492,13 @@ tree:traverse(function(node)
 		local stmts = table()
 
 		local function processcond(boolexpr, l1, l2, nott)
-			if ast._or.is(boolexpr) then
+			if ast._or:isa(boolexpr) then
 				processcond(boolexpr.args[1], l1, l2, nott)
 				processcond(boolexpr.args[2], l1, l2, nott)
-			elseif ast._and.is(boolexpr) then
+			elseif ast._and:isa(boolexpr) then
 				processcond(boolexpr.args[1], l2, l1, not nott)
 				processcond(boolexpr.args[2], l2, l1, not nott)
-			elseif ast._not.is(boolexpr) then
+			elseif ast._not:isa(boolexpr) then
 				processcond(boolexpr.args[1], l1, l2, not nott)
 			else
 				if nott then boolexpr = ast._not(boolexpr) end
@@ -537,7 +537,7 @@ tree:traverse(function(node)
 		return ast._block(stmts:unpack())
 	end
 	
-	if ast._if.is(node) then
+	if ast._if:isa(node) then
 		return handle_if(
 			node.cond,		-- cond
 			node,			-- stmts
@@ -553,12 +553,12 @@ end)
 local locals = {}
 local globals = {}
 tree:traverse(function(node)
-	if ast._assign.is(node) then
+	if ast._assign:isa(node) then
 		local names = table.mapi(node.vars, function(var)
 			assert(type(var.name) == 'string')
 			return var.name
 		end)
-		if ast._local.is(node.parent) then
+		if ast._local:isa(node.parent) then
 			for _,name in ipairs(names) do
 				locals[name] = true
 			end
