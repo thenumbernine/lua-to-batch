@@ -3,7 +3,7 @@
 local parser = require 'parser'
 local ast = require 'parser.ast'
 local table = require 'ext.table'
-local file = require 'ext.file'
+local path = require 'ext.path'
 local range = require 'ext.range'
 
 local infile = ...
@@ -290,10 +290,10 @@ function ast._endlocal.tostringmethods:batch()
 end
 
 infile = infile or 'test1.lua'
-local inbase, ext = file(infile):getext()
+local inbase, ext = path(infile):getext()
 local outfile = inbase..'.bat'
 print('reading '..infile)
-local code = file(infile):read()
+local code = path(infile):read()
 local tree = parser.parse(code)
 
 -- if there is a _call to "select('#', ...)" then find the parent block and put some argcount code at the beginning
@@ -579,7 +579,7 @@ end
 table.insert(tree, ast._endlocal(table.keys(globals)))
 
 ast.tostringmethod = 'batch'
-file(outfile):write(
+path(outfile):write(
 	table{
 		'@echo off',
 		'setlocal enabledelayedexpansion',
