@@ -290,8 +290,7 @@ function ast._endlocal.tostringmethods:batch()
 end
 
 infile = infile or 'test1.lua'
-local inbase, ext = path(infile):getext()
-local outfile = inbase..'.bat'
+local outfile = path(infile):setext'bat'
 print('reading '..infile)
 local code = path(infile):read()
 local tree = parser.parse(code)
@@ -579,7 +578,7 @@ end
 table.insert(tree, ast._endlocal(table.keys(globals)))
 
 ast.tostringmethod = 'batch'
-path(outfile):write(
+outfile:write(
 	table{
 		'@echo off',
 		'setlocal enabledelayedexpansion',
