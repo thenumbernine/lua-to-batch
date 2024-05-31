@@ -1,7 +1,7 @@
 #!/usr/bin/env lua
 
 local parser = require 'parser'
-local ast = require 'parser.ast'
+local ast = require 'parser.lua.ast'
 local table = require 'ext.table'
 local path = require 'ext.path'
 local range = require 'ext.range'
