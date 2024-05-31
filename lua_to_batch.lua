@@ -8,18 +8,31 @@ local range = require 'ext.range'
 
 local infile = ...
 
+-- [[ copied out of parser/tests/lua_to_c.lua , in case you want to put it all in one place ...
 local tabs = -1	-- because everything is in one block
 function tab()
 	return ('\t'):rep(tabs)
 end
-function tabblock(t)
+function tabblock(t, apply)
 	tabs = tabs + 1
 	local s = table.mapi(t, function(ti)
-		return tab() .. tostring(ti)
+		return tab() .. apply(ti)
 	end):concat'\n'
 	tabs = tabs - 1
 	return s
 end
+
+local function toBatch(x)
+	if x.toBatch then return x:toBatch(toBatch) end
+	return x:serialize(toBatch)
+end
+
+for _,cl in ipairs(ast.allclasses) do
+	function cl:toBatch(apply)
+		return self:serialize(apply)
+	end
+end
+-- ]]
 
 
 local varindex = 0
@@ -43,22 +56,12 @@ local function nextfunc()
 end
 
 
-
--- make lua output the default for nodes' output
-local names = table()
-for name,nc in pairs(ast) do
-	if ast.node:isa(nc) then
-		names:insert(name)
-		nc.tostringmethods.batch = nc.tostringmethods.lua
-	end
-end
-
-function ast._concat.tostringmethods:batch()
+function ast._concat:toBatch(apply)
 	local a,b = table.unpack(self.args)
-	return tostring(a)..tostring(b)
+	return apply(a)..apply(b)
 end
 
-function ast._call.tostringmethods:batch()
+function ast._call:toBatch(apply)
 	local funcname
 	if ast._var:isa(self.func) then
 		funcname = self.func.name
@@ -66,7 +69,7 @@ function ast._call.tostringmethods:batch()
 			error("select() should have be replaced already")
 		end
 		if funcname == 'print' then
-			return 'echo '..table.mapi(self.args, tostring):concat'\t'
+			return 'echo '..table.mapi(self.args, apply):concat'\t'
 		end
 	elseif ast._index:isa(self.func) then
 		if ast._var:isa(self.func.expr)
@@ -77,53 +80,53 @@ function ast._call.tostringmethods:batch()
 			-- os.exit(1) ... returns an error ... but shouldn't kill calling batch files, right?
 			return 'goto :eof'
 		end
-		funcname = tostring(self.func)
+		funcname = apply(self.func)
 	end
-	return 'call :'..funcname..table.mapi(self.args, function(arg) return ' '..tostring(arg) end):concat()
+	return 'call :'..funcname..table.mapi(self.args, function(arg) return ' '..apply(arg) end):concat()
 end
 
-function ast._string.tostringmethods:batch()
+function ast._string:toBatch(apply)
 	return self.value	-- no quotes
 end
 
-function ast._local.tostringmethods:batch()
+function ast._local:toBatch(apply)
 	-- local has function or assign as children
 	-- if an assign isn't the child of a local then it will need to be exported at the end of a setlocal block (endlocal & set ... )
 	-- otherwise, upon local, we will need a setlocal block
 	-- if we're inside a function ... ever ... then when the first setlocal is executed, it must be followed with EnableDelayedExpansion
 	--  and then all subsequent local variable references will need to be surrounded by !'s instead of %'s
-	return tostring(self.exprs[1])
+	return apply(self.exprs[1])
 end
 
-function ast._foreq.tostringmethods:batch()
+function ast._foreq:toBatch(apply)
 	-- if a for-loop arg is an expression, can it be evaluated immediately?
 	-- for-loop vars must have two parenthesis prefix
-	return 'for /l %%'..tostring(self.var.name)..' in ('
-		..tostring(self.min)..','
-		..tostring(self.step or '1')..','
-		..tostring(self.max)..') do (\n'
+	return 'for /l %%'..self.var.name..' in ('
+		..apply(self.min)..','
+		..(self.step and apply(self.step) or '1')..','
+		..apply(self.max)..') do (\n'
 			-- TODO call into loop body, and exit /b
-			..tabblock(self)
+			..tabblock(self, apply)
 		..'\n)'
 end
 
-function ast._if.tostringmethods:batch()
-	local s = 'if '..tostring(self.cond)
+function ast._if:toBatch(apply)
+	local s = 'if '..apply(self.cond)
 		..' (\n'
-			..tabblock(self)
+			..tabblock(self, apply)
 	for _,ei in ipairs(self.elseifs) do
-		s = s .. tostring(ei)
+		s = s .. apply(ei)
 	end
-	if self.elsestmt then s = s .. tostring(self.elsestmt) end
+	if self.elsestmt then s = s .. apply(self.elsestmt) end
 	s = s .. '\n' .. tab() .. ')'
 	return s
 end
-function ast._elseif.tostringmethods:batch()
+function ast._elseif:toBatch(apply)
 	return '\n'
 		..tab()
-		..') else if '..tostring(self.cond)
+		..') else if '..apply(self.cond)
 		..' (\n'
-		..tabblock(self)
+		..tabblock(self, apply)
 end
 
 for _,info in ipairs{
@@ -135,16 +138,16 @@ for _,info in ipairs{
 	{'ne','neq'},
 } do
 	local name, sym = table.unpack(info)
-	ast['_'..name].tostringmethods.batch = function(self)
-		return table.mapi(self.args, tostring):concat(' '..sym..' ')
+	ast['_'..name].toBatch = function(self, apply)
+		return table.mapi(self.args, apply):concat(' '..sym..' ')
 	end
 end
 
-function ast._block.tostringmethods:batch()
-	return tabblock(self)
+function ast._block:toBatch(apply)
+	return tabblock(self, apply)
 end
 --[[
-function ast._vararg.tostringmethods:batch()
+function ast._vararg:toBatch(apply)
 if the ... is in global scope then it will work as an accessor to $*
 if it's in function scope then ... the same?
 in both cases, ... isn't converted directly, but instead, how it's used
@@ -161,7 +164,7 @@ local function getBatchVarForLuaVar(varname)
 	return batchvar
 end
 
-function ast._assign.tostringmethods:batch()
+function ast._assign:toBatch(apply)
 	local lines = table()
 	for i=1,#self.vars do
 		local var = getBatchVarForLuaVar(self.vars[i])
@@ -170,7 +173,7 @@ function ast._assign.tostringmethods:batch()
 		if self.arith then
 			cmd = cmd .. '/a '
 		end
-		cmd = cmd .. '"'..tostring(var.name)..'='..tostring(expr)..'"'
+		cmd = cmd .. '"'..var.name..'='..apply(expr)..'"'
 		lines:insert(cmd)
 	end
 	return lines:concat'\n'
@@ -184,7 +187,7 @@ local function findsource(src)
 	end
 end
 
-function ast._var.tostringmethods:batch()
+function ast._var:toBatch(apply)
 	local name = self.name
 	local varsource = findsource(self)
 	if varsource and ast._foreq:isa(varsource) then
@@ -201,15 +204,14 @@ function ast._var.tostringmethods:batch()
 	return name
 end
 
-local oldtostring = ast._index.tostringmethods.lua
-function ast._index.tostringmethods:batch(...)
-	return '!'..oldtostring(self, ...)..'!'
+function ast._index:toBatch(apply)
+	return '!'..apply(self)..'!'
 end
 
-ast._argcount = ast.nodeclass{type='argcount'}
+local _argcount = ast.nodeclass'argcount'
 function ast._argcount:init(...)
 end
-function ast._argcount.tostringmethods:batch()
+function ast._argcount:toBatch(apply)
 	return [[
 set __tmp__argcount=0
 for %%x in (%*) do (
@@ -220,11 +222,11 @@ end
 
 -- modulus is two %'s
 -- along with the two % prefix to for-loops and % wrappers to variables, this is not confusing at all
-function ast._mod.tostringmethods:batch()
-	return table.mapi(self.args, tostring):concat' %% '
+function ast._mod:toBatch(apply)
+	return table.mapi(self.args, apply):concat' %% '
 end
 
-function ast._function.tostringmethods:batch()
+function ast._function:toBatch(apply)
 	-- if it is a local function then move it to global scope ... this means closures are in danger of being invalid
 	-- args will have to be remapped beforehand as well...
 	local name = assert(self.name)	-- if it's a lambda then generate it a name
@@ -236,47 +238,42 @@ function ast._function.tostringmethods:batch()
 	return '\n'
 		..'goto '..l..'\n'
 		..':'..name..'\n'
-		.. tabblock(self)..'\n'
+		.. tabblock(self, apply)..'\n'
 		.. 'exit /b\n'
 		.. ':'..l
 end
 
--- TODO add to default lua
-ast._goto = ast.nodeclass{type='goto'}
-function ast._goto:init(label)
-	self.label = label
-end
-function ast._goto.tostringmethods:batch()
-	return 'goto '..self.label
+function ast._goto:toBatch(apply)
+	return 'goto '..self.name
 end
 
-ast._label = ast.nodeclass{type='label'}
+ast._label = ast.nodeclass'label'
 function ast._label:init(name)
 	self.name = name
 end
-function ast._label.tostringmethods:batch()
+function ast._label:toBatch(apply)
 	return '\n:'..self.name
 end
 
 -- notice this doesn't return any values
 -- I'm only using this for inserting an exit at the end of the global scope block, before all temp functions
 --  I should also move all other funtcions beneath this inserted statement...
-function ast._return.tostringmethods:batch()
+function ast._return:toBatch(apply)
 	return 'exit /b'
 end
 
-function ast._or.tostringmethods:batch()
+function ast._or:toBatch(apply)
 	error("should've replaced all of the or's")
 end
-function ast._and.tostringmethods:batch()
+function ast._and:toBatch(apply)
 	error("should've replaced all of the and's")
 end
 
-ast._endlocal = ast.nodeclass{type='endlocal'}
+ast._endlocal = ast.nodeclass'endlocal'
 function ast._endlocal:init(globals)
 	self.globals = table(globals)
 end
-function ast._endlocal.tostringmethods:batch()
+function ast._endlocal:toBatch(apply)
 	-- TODO & set VARIABLE=value at the end
 	-- for all the global variables we assigned to 
 	local t = tab()
@@ -577,12 +574,11 @@ end
 
 table.insert(tree, ast._endlocal(table.keys(globals)))
 
-ast.tostringmethod = 'batch'
 outfile:write(
 	table{
 		'@echo off',
 		'setlocal enabledelayedexpansion',
-		tostring(tree)
+		tree:toBatch(toBatch)
 	}:concat'\n'
 		-- until I can solve my tab problems:
 		:gsub('\t+', '\t')
