@@ -27,9 +27,12 @@ local function toBatch(x)
 	return x:serialize(toBatch)
 end
 
-for _,cl in ipairs(ast.allclasses) do
-	function cl:toBatch(apply)
-		return self:serialize(apply)
+for k,cl in pairs(ast) do
+	if ast.node:isa(cl) then
+		-- weakness to this design ...i need to always keep specifying the above toC() wrapper, or I have to make a seprate member function...
+		function cl:toBatch(apply)
+			return self:serialize(apply)
+		end
 	end
 end
 -- ]]
