@@ -57,7 +57,7 @@ end
 
 
 function ast._concat:toBatch(apply)
-	local a,b = table.unpack(self.args)
+	local a, b = table.unpack(self)
 	return apply(a)..apply(b)
 end
 
@@ -139,7 +139,7 @@ for _,info in ipairs{
 } do
 	local name, sym = table.unpack(info)
 	ast['_'..name].toBatch = function(self, apply)
-		return table.mapi(self.args, apply):concat(' '..sym..' ')
+		return table.mapi(self, apply):concat(' '..sym..' ')
 	end
 end
 
@@ -223,7 +223,7 @@ end
 -- modulus is two %'s
 -- along with the two % prefix to for-loops and % wrappers to variables, this is not confusing at all
 function ast._mod:toBatch(apply)
-	return table.mapi(self.args, apply):concat' %% '
+	return table.mapi(self, apply):concat' %% '
 end
 
 function ast._function:toBatch(apply)
@@ -354,9 +354,9 @@ tree:traverse(nil, function(node)
 		end
 
 		if ast._op:isa(node) then
-			for i=1,#node.args do
-				if opis(node.args[i]) then
-					node.args[i] = replace(node.args[i])
+			for i=1,#node do
+				if opis(node[i]) then
+					node[i] = replace(node[i])
 				end
 			end
 		elseif ast._par:isa(node) then
@@ -489,13 +489,13 @@ tree:traverse(function(node)
 
 		local function processcond(boolexpr, l1, l2, nott)
 			if ast._or:isa(boolexpr) then
-				processcond(boolexpr.args[1], l1, l2, nott)
-				processcond(boolexpr.args[2], l1, l2, nott)
+				processcond(boolexpr[1], l1, l2, nott)
+				processcond(boolexpr[2], l1, l2, nott)
 			elseif ast._and:isa(boolexpr) then
-				processcond(boolexpr.args[1], l2, l1, not nott)
-				processcond(boolexpr.args[2], l2, l1, not nott)
+				processcond(boolexpr[1], l2, l1, not nott)
+				processcond(boolexpr[2], l2, l1, not nott)
 			elseif ast._not:isa(boolexpr) then
-				processcond(boolexpr.args[1], l1, l2, not nott)
+				processcond(boolexpr[1], l1, l2, not nott)
 			else
 				if nott then boolexpr = ast._not(boolexpr) end
 				stmts:insert(ast._if(boolexpr, ast._goto(l1)))
