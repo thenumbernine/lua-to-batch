@@ -23,15 +23,18 @@ function tabblock(t, apply)
 end
 
 local function toBatch(x)
-	if x.toBatch then return x:toBatch(toBatch) end
+	if x.toBatch then return x:toBatch() end
 	return x:serialize(toBatch)
 end
 
 for k,cl in pairs(ast) do
 	if ast.node:isa(cl) then
 		-- weakness to this design ...i need to always keep specifying the above toC() wrapper, or I have to make a seprate member function...
-		function cl:toBatch(apply)
+		function cl:toBatch_recursive(apply)
 			return self:serialize(apply)
+		end
+		function cl:toBatch()
+			return cl:toBatch_recursive(toBatch)
 		end
 	end
 end
@@ -59,12 +62,12 @@ local function nextfunc()
 end
 
 
-function ast._concat:toBatch(apply)
+function ast._concat:toBatch_recursive(apply)
 	local a, b = table.unpack(self)
 	return apply(a)..apply(b)
 end
 
-function ast._call:toBatch(apply)
+function ast._call:toBatch_recursive(apply)
 	local funcname
 	if ast._var:isa(self.func) then
 		funcname = self.func.name
@@ -88,11 +91,11 @@ function ast._call:toBatch(apply)
 	return 'call :'..funcname..table.mapi(self.args, function(arg) return ' '..apply(arg) end):concat()
 end
 
-function ast._string:toBatch(apply)
+function ast._string:toBatch_recursive(apply)
 	return self.value	-- no quotes
 end
 
-function ast._local:toBatch(apply)
+function ast._local:toBatch_recursive(apply)
 	-- local has function or assign as children
 	-- if an assign isn't the child of a local then it will need to be exported at the end of a setlocal block (endlocal & set ... )
 	-- otherwise, upon local, we will need a setlocal block
@@ -101,7 +104,7 @@ function ast._local:toBatch(apply)
 	return apply(self.exprs[1])
 end
 
-function ast._foreq:toBatch(apply)
+function ast._foreq:toBatch_recursive(apply)
 	-- if a for-loop arg is an expression, can it be evaluated immediately?
 	-- for-loop vars must have two parenthesis prefix
 	return 'for /l %%'..self.var.name..' in ('
@@ -113,7 +116,7 @@ function ast._foreq:toBatch(apply)
 		..'\n)'
 end
 
-function ast._if:toBatch(apply)
+function ast._if:toBatch_recursive(apply)
 	local s = 'if '..apply(self.cond)
 		..' (\n'
 			..tabblock(self, apply)
@@ -124,7 +127,7 @@ function ast._if:toBatch(apply)
 	s = s .. '\n' .. tab() .. ')'
 	return s
 end
-function ast._elseif:toBatch(apply)
+function ast._elseif:toBatch_recursive(apply)
 	return '\n'
 		..tab()
 		..') else if '..apply(self.cond)
@@ -141,16 +144,16 @@ for _,info in ipairs{
 	{'ne','neq'},
 } do
 	local name, sym = table.unpack(info)
-	ast['_'..name].toBatch = function(self, apply)
+	ast['_'..name].toBatch_recursive = function(self, apply)
 		return table.mapi(self, apply):concat(' '..sym..' ')
 	end
 end
 
-function ast._block:toBatch(apply)
+function ast._block:toBatch_recursive(apply)
 	return tabblock(self, apply)
 end
 --[[
-function ast._vararg:toBatch(apply)
+function ast._vararg:toBatch_recursive(apply)
 if the ... is in global scope then it will work as an accessor to $*
 if it's in function scope then ... the same?
 in both cases, ... isn't converted directly, but instead, how it's used
@@ -167,7 +170,7 @@ local function getBatchVarForLuaVar(varname)
 	return batchvar
 end
 
-function ast._assign:toBatch(apply)
+function ast._assign:toBatch_recursive(apply)
 	local lines = table()
 	for i=1,#self.vars do
 		local var = getBatchVarForLuaVar(self.vars[i])
@@ -190,7 +193,7 @@ local function findsource(src)
 	end
 end
 
-function ast._var:toBatch(apply)
+function ast._var:toBatch_recursive(apply)
 	local name = self.name
 	local varsource = findsource(self)
 	if varsource and ast._foreq:isa(varsource) then
@@ -207,14 +210,14 @@ function ast._var:toBatch(apply)
 	return name
 end
 
-function ast._index:toBatch(apply)
+function ast._index:toBatch_recursive(apply)
 	return '!'..apply(self)..'!'
 end
 
 local _argcount = ast.nodeclass'argcount'
 function ast._argcount:init(...)
 end
-function ast._argcount:toBatch(apply)
+function ast._argcount:toBatch_recursive(apply)
 	return [[
 set __tmp__argcount=0
 for %%x in (%*) do (
@@ -225,11 +228,11 @@ end
 
 -- modulus is two %'s
 -- along with the two % prefix to for-loops and % wrappers to variables, this is not confusing at all
-function ast._mod:toBatch(apply)
+function ast._mod:toBatch_recursive(apply)
 	return table.mapi(self, apply):concat' %% '
 end
 
-function ast._function:toBatch(apply)
+function ast._function:toBatch_recursive(apply)
 	-- if it is a local function then move it to global scope ... this means closures are in danger of being invalid
 	-- args will have to be remapped beforehand as well...
 	local name = assert(self.name)	-- if it's a lambda then generate it a name
@@ -246,7 +249,7 @@ function ast._function:toBatch(apply)
 		.. ':'..l
 end
 
-function ast._goto:toBatch(apply)
+function ast._goto:toBatch_recursive(apply)
 	return 'goto '..self.name
 end
 
@@ -254,21 +257,21 @@ ast._label = ast.nodeclass'label'
 function ast._label:init(name)
 	self.name = name
 end
-function ast._label:toBatch(apply)
+function ast._label:toBatch_recursive(apply)
 	return '\n:'..self.name
 end
 
 -- notice this doesn't return any values
 -- I'm only using this for inserting an exit at the end of the global scope block, before all temp functions
 --  I should also move all other funtcions beneath this inserted statement...
-function ast._return:toBatch(apply)
+function ast._return:toBatch_recursive(apply)
 	return 'exit /b'
 end
 
-function ast._or:toBatch(apply)
+function ast._or:toBatch_recursive(apply)
 	error("should've replaced all of the or's")
 end
-function ast._and:toBatch(apply)
+function ast._and:toBatch_recursive(apply)
 	error("should've replaced all of the and's")
 end
 
@@ -276,7 +279,7 @@ ast._endlocal = ast.nodeclass'endlocal'
 function ast._endlocal:init(globals)
 	self.globals = table(globals)
 end
-function ast._endlocal:toBatch(apply)
+function ast._endlocal:toBatch_recursive(apply)
 	-- TODO & set VARIABLE=value at the end
 	-- for all the global variables we assigned to 
 	local t = tab()
@@ -581,7 +584,7 @@ outfile:write(
 	table{
 		'@echo off',
 		'setlocal enabledelayedexpansion',
-		tree:toBatch(toBatch)
+		tree:toBatch()
 	}:concat'\n'
 		-- until I can solve my tab problems:
 		:gsub('\t+', '\t')
