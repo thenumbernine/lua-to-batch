@@ -2,43 +2,63 @@
 
 local parser = require 'parser'
 local ast = require 'parser.lua.ast'
+local assert = require 'ext.assert'
 local table = require 'ext.table'
 local path = require 'ext.path'
 local range = require 'ext.range'
 
 local infile = ...
 
--- [[ copied out of parser/tests/lua_to_c.lua , in case you want to put it all in one place ...
+-- [=[ copied out of parser/tests/lua_to_c.lua , in case you want to put it all in one place ...
 local tabs = -1	-- because everything is in one block
 function tab()
 	return ('\t'):rep(tabs)
 end
-function tabblock(t, apply)
+function tabblock(t, consume)
 	tabs = tabs + 1
-	local s = table.mapi(t, function(ti)
-		return tab() .. apply(ti)
-	end):concat'\n'
+	for i,ti in ipairs(t) do
+		consume(tab())
+		consume(ti)
+		if i < #t then consume'\n' end
+	end
 	tabs = tabs - 1
-	return s
 end
 
-local function toBatch(x)
-	if x.toBatch then return x:toBatch() end
-	return x:serialize(toBatch)
-end
-
+-- TODO subclass into a separate ast
 for k,cl in pairs(ast) do
 	if ast.node:isa(cl) then
-		-- weakness to this design ...i need to always keep specifying the above toC() wrapper, or I have to make a seprate member function...
-		function cl:toBatch_recursive(apply)
-			return self:serialize(apply)
-		end
 		function cl:toBatch()
-			return cl:toBatch_recursive(toBatch)
+			--[[ this does a lot of lua-specific spacing stuff
+			return cl:serializeRecursiveMember'toBatch_recursive'
+			--]]
+			-- [[
+			local s = ''
+			local consume
+			consume = function(x)
+				if type(x) == 'number' then
+					x = tostring(x)
+				end
+				if type(x) == 'string' then
+					s = s .. x
+				elseif type(x) == 'table' then
+					assert.is(x, ast.node)
+					assert.index(x, 'toBatch_recursive')
+					x:toBatch_recursive(consume)
+				else
+					error('here with unknown type '..type(x))
+				end
+			end
+			self:toBatch_recursive(consume)
+			return s
+			--]]
+		end
+		-- weakness to this design ...i need to always keep specifying the above toC() wrapper, or I have to make a seprate member function...
+		function cl:toBatch_recursive(consume)
+			self:serialize(consume)
 		end
 	end
 end
--- ]]
+-- ]=]
 
 
 local varindex = 0
@@ -62,12 +82,12 @@ local function nextfunc()
 end
 
 
-function ast._concat:toBatch_recursive(apply)
-	local a, b = table.unpack(self)
-	return apply(a)..apply(b)
+function ast._concat:toBatch_recursive(consume)
+	consume(self[1])
+	consume(self[2])
 end
 
-function ast._call:toBatch_recursive(apply)
+function ast._call:toBatch_recursive(consume)
 	local funcname
 	if ast._var:isa(self.func) then
 		funcname = self.func.name
@@ -75,7 +95,14 @@ function ast._call:toBatch_recursive(apply)
 			error("select() should have be replaced already")
 		end
 		if funcname == 'print' then
-			return 'echo '..table.mapi(self.args, apply):concat'\t'
+			consume'echo '
+			for i,x in ipairs(self.args) do
+				consume(x)
+				if i < #self.args then
+					consume'\t'
+				end
+			end
+			return
 		end
 	elseif ast._index:isa(self.func) then
 		if ast._var:isa(self.func.expr)
@@ -84,55 +111,74 @@ function ast._call:toBatch_recursive(apply)
 		and self.func.key.value == 'exit'
 		then
 			-- os.exit(1) ... returns an error ... but shouldn't kill calling batch files, right?
-			return 'goto :eof'
+			consume'goto :eof'
+			return
 		end
-		funcname = apply(self.func)
 	end
-	return 'call :'..funcname..table.mapi(self.args, function(arg) return ' '..apply(arg) end):concat()
+	consume'call :'
+	consume(self.func)
+	for _,arg in ipairs(self.args) do
+		consume' '
+		consume(arg)
+	end
 end
 
-function ast._string:toBatch_recursive(apply)
-	return self.value	-- no quotes
+function ast._string:toBatch_recursive(consume)
+	consume(self.value)	-- no quotes
 end
 
-function ast._local:toBatch_recursive(apply)
+function ast._local:toBatch_recursive(consume)
 	-- local has function or assign as children
 	-- if an assign isn't the child of a local then it will need to be exported at the end of a setlocal block (endlocal & set ... )
 	-- otherwise, upon local, we will need a setlocal block
 	-- if we're inside a function ... ever ... then when the first setlocal is executed, it must be followed with EnableDelayedExpansion
 	--  and then all subsequent local variable references will need to be surrounded by !'s instead of %'s
-	return apply(self.exprs[1])
+	consume(self.exprs[1])
 end
 
-function ast._foreq:toBatch_recursive(apply)
+function ast._foreq:toBatch_recursive(consume)
 	-- if a for-loop arg is an expression, can it be evaluated immediately?
 	-- for-loop vars must have two parenthesis prefix
-	return 'for /l %%'..self.var.name..' in ('
-		..apply(self.min)..','
-		..(self.step and apply(self.step) or '1')..','
-		..apply(self.max)..') do (\n'
-			-- TODO call into loop body, and exit /b
-			..tabblock(self, apply)
-		..'\n)'
+	consume'for /l %%'
+	consume(self.var.name)
+	consume' in ('
+	consume(self.min)
+	consume','
+	if self.step then
+		consume(self.step)
+	else
+		consume'1'
+	end
+	consume','
+	consume(self.max)
+	consume') do (\n'
+	-- TODO call into loop body, and exit /b
+	tabblock(self, consume)
+	consume'\n)'
 end
 
-function ast._if:toBatch_recursive(apply)
-	local s = 'if '..apply(self.cond)
-		..' (\n'
-			..tabblock(self, apply)
+function ast._if:toBatch_recursive(consume)
+	consume'if '
+	consume(self.cond)
+	consume' (\n'
+	tabblock(self, consume)
 	for _,ei in ipairs(self.elseifs) do
-		s = s .. apply(ei)
+		consume(ei)
 	end
-	if self.elsestmt then s = s .. apply(self.elsestmt) end
-	s = s .. '\n' .. tab() .. ')'
-	return s
+	if self.elsestmt then 
+		consume(self.elsestmt) 
+	end
+	consume'\n'
+	consume(tab())
+	consume')'
 end
-function ast._elseif:toBatch_recursive(apply)
-	return '\n'
-		..tab()
-		..') else if '..apply(self.cond)
-		..' (\n'
-		..tabblock(self, apply)
+function ast._elseif:toBatch_recursive(consume)
+	consume'\n'
+	consume(tab())
+	consume') else if '
+	consume(self.cond)
+	consume' (\n'
+	tabblock(self, consume)
 end
 
 for _,info in ipairs{
@@ -144,16 +190,23 @@ for _,info in ipairs{
 	{'ne','neq'},
 } do
 	local name, sym = table.unpack(info)
-	ast['_'..name].toBatch_recursive = function(self, apply)
-		return table.mapi(self, apply):concat(' '..sym..' ')
+	ast['_'..name].toBatch_recursive = function(self, consume)
+		for i,x in ipairs(self) do
+			consume(x)
+			if i < #self then
+				consume' '
+				consume(sym)
+				consume' '
+			end
+		end
 	end
 end
 
-function ast._block:toBatch_recursive(apply)
-	return tabblock(self, apply)
+function ast._block:toBatch_recursive(consume)
+	tabblock(self, consume)
 end
 --[[
-function ast._vararg:toBatch_recursive(apply)
+function ast._vararg:toBatch_recursive(consume)
 if the ... is in global scope then it will work as an accessor to $*
 if it's in function scope then ... the same?
 in both cases, ... isn't converted directly, but instead, how it's used
@@ -170,19 +223,21 @@ local function getBatchVarForLuaVar(varname)
 	return batchvar
 end
 
-function ast._assign:toBatch_recursive(apply)
-	local lines = table()
+function ast._assign:toBatch_recursive(consume)
 	for i=1,#self.vars do
 		local var = getBatchVarForLuaVar(self.vars[i])
 		local expr = self.exprs[i]
-		local cmd = 'set '
+		consume'set '
 		if self.arith then
-			cmd = cmd .. '/a '
+			consume'/a '
 		end
-		cmd = cmd .. '"'..var.name..'='..apply(expr)..'"'
-		lines:insert(cmd)
+		consume('"'..var.name..'=')
+		consume(expr)
+		consume'"'
+		if i < #self.vars then
+			consume'\n'
+		end
 	end
-	return lines:concat'\n'
 end
 
 local function findsource(src)
@@ -193,7 +248,7 @@ local function findsource(src)
 	end
 end
 
-function ast._var:toBatch_recursive(apply)
+function ast._var:toBatch_recursive(consume)
 	local name = self.name
 	local varsource = findsource(self)
 	if varsource and ast._foreq:isa(varsource) then
@@ -207,18 +262,20 @@ function ast._var:toBatch_recursive(apply)
 			end
 		end
 	end
-	return name
+	consume(name)
 end
 
-function ast._index:toBatch_recursive(apply)
-	return '!'..apply(self)..'!'
+function ast._index:toBatch_recursive(consume)
+	consume'!'
+	consume(self)
+	consume'!'
 end
 
 local _argcount = ast.nodeclass'argcount'
 function ast._argcount:init(...)
 end
-function ast._argcount:toBatch_recursive(apply)
-	return [[
+function ast._argcount:toBatch_recursive(consume)
+	consume[[
 set __tmp__argcount=0
 for %%x in (%*) do (
 	set /a __tmp__argcount+=1
@@ -228,50 +285,58 @@ end
 
 -- modulus is two %'s
 -- along with the two % prefix to for-loops and % wrappers to variables, this is not confusing at all
-function ast._mod:toBatch_recursive(apply)
-	return table.mapi(self, apply):concat' %% '
+function ast._mod:toBatch_recursive(consume)
+	for i,x in ipairs(self) do
+		consume(x)
+		if i < #self then
+			consume' %% '
+		end
+	end
 end
 
-function ast._function:toBatch_recursive(apply)
+function ast._function:toBatch_recursive(consume)
 	-- if it is a local function then move it to global scope ... this means closures are in danger of being invalid
 	-- args will have to be remapped beforehand as well...
 	local name = assert(self.name)	-- if it's a lambda then generate it a name
-	assert(ast._var:isa(name))
+	assert.is(name, ast._var)
 	name = name.name	-- TODO function .name is a var, with .name a string (should it be a _string ?)
 	local l = nextgoto()
 	-- for safety's sake I'll add gotos around the function 
 	-- so global scope code keeps executing 
-	return '\n'
-		..'goto '..l..'\n'
-		..':'..name..'\n'
-		.. tabblock(self, apply)..'\n'
-		.. 'exit /b\n'
-		.. ':'..l
+	consume'\n'
+	consume('goto '..l..'\n')
+	consume(':'..name..'\n')
+	tabblock(self, consume)
+	consume'\n'
+	consume'exit /b\n'
+	consume(':'..l)
 end
 
-function ast._goto:toBatch_recursive(apply)
-	return 'goto '..self.name
+function ast._goto:toBatch_recursive(consume)
+	consume('goto ')
+	consume(self.name)
 end
 
 ast._label = ast.nodeclass'label'
 function ast._label:init(name)
 	self.name = name
 end
-function ast._label:toBatch_recursive(apply)
-	return '\n:'..self.name
+function ast._label:toBatch_recursive(consume)
+	consume'\n:'
+	consume(self.name)
 end
 
 -- notice this doesn't return any values
 -- I'm only using this for inserting an exit at the end of the global scope block, before all temp functions
 --  I should also move all other funtcions beneath this inserted statement...
-function ast._return:toBatch_recursive(apply)
-	return 'exit /b'
+function ast._return:toBatch_recursive(consume)
+	consume'exit /b'
 end
 
-function ast._or:toBatch_recursive(apply)
+function ast._or:toBatch_recursive(consume)
 	error("should've replaced all of the or's")
 end
-function ast._and:toBatch_recursive(apply)
+function ast._and:toBatch_recursive(consume)
 	error("should've replaced all of the and's")
 end
 
@@ -279,17 +344,16 @@ ast._endlocal = ast.nodeclass'endlocal'
 function ast._endlocal:init(globals)
 	self.globals = table(globals)
 end
-function ast._endlocal:toBatch_recursive(apply)
+function ast._endlocal:toBatch_recursive(consume)
 	-- TODO & set VARIABLE=value at the end
 	-- for all the global variables we assigned to 
 	local t = tab()
-	local s = '\n'..t..'endlocal'
+	consume('\n'..t..'endlocal')
 	t = t .. '\t'
 	for _,name in ipairs(self.globals) do
-		s = s .. ' ^\n'
-			..t..'& set "'..name..'=%'..name..'%"'
+		consume(' ^\n'
+			..t..'& set "'..name..'=%'..name..'%"')
 	end
-	return s
 end
 
 infile = infile or 'test1.lua'
@@ -412,12 +476,12 @@ tree:traverse(function(node)
 	if ast._function:isa(node) then
 		-- TODO make sure the function is global scope
 		local args = table.mapi(node.args, function(arg) 
-			assert(type(arg.name) == 'string')
+			assert.type(arg.name, 'string')
 			return arg.name 
 		end)
 		return node:traverse(function(node2)
 			if ast._var:isa(node2) then
-				assert(type(node2.name) == 'string')
+				assert.type(node2.name, 'string')
 				local i = table.find(args, node2.name)
 				if i then
 					return ast._var(i)
@@ -557,7 +621,7 @@ local globals = {}
 tree:traverse(function(node)
 	if ast._assign:isa(node) then
 		local names = table.mapi(node.vars, function(var)
-			assert(type(var.name) == 'string')
+			assert.type(var.name, 'string')
 			return var.name
 		end)
 		if ast._local:isa(node.parent) then
