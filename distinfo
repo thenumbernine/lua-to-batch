@@ -1,0 +1,11 @@
+name = "lua-to-batch"
+files = {
+	["README.md"] = "lua-to-batch/README.md",
+	["lua_to_batch.lua"] = "lua-to-batch/lua_to_batch.lua",
+	["test1.lua"] = "lua-to-batch/test1.lua",
+	["test2.lua"] = "lua-to-batch/test2.lua",
+}
+deps = {
+	"ext",
+	"parser",
+}
